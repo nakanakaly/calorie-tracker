@@ -1,0 +1,8 @@
+uploads = []
+outputs = []
+
+[[generated]]
+id = "VbCux9bTC7YWsO7DRNkh2"
+uri = "file://artifacts/mobile/assets/images/icon.png"
+type = "image"
+title = "calorie tracker app icon"

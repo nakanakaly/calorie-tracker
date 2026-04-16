@@ -1,0 +1,84 @@
+import {
+  Inter_400Regular,
+  Inter_500Medium,
+  Inter_600SemiBold,
+  Inter_700Bold,
+  useFonts,
+} from "@expo-google-fonts/inter";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { Stack } from "expo-router";
+import * as SplashScreen from "expo-splash-screen";
+import React, { useEffect } from "react";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { KeyboardProvider } from "react-native-keyboard-controller";
+import { SafeAreaProvider } from "react-native-safe-area-context";
+
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { FoodLogProvider } from "@/context/FoodLogContext";
+
+SplashScreen.preventAutoHideAsync();
+
+const queryClient = new QueryClient();
+
+function RootLayoutNav() {
+  return (
+    <Stack>
+      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+      <Stack.Screen
+        name="add-food"
+        options={{
+          title: "食事を追加",
+          presentation: "modal",
+          headerBackTitle: "戻る",
+        }}
+      />
+      <Stack.Screen
+        name="history"
+        options={{
+          title: "履歴",
+          headerBackTitle: "戻る",
+        }}
+      />
+      <Stack.Screen
+        name="settings"
+        options={{
+          title: "目標設定",
+          headerBackTitle: "戻る",
+        }}
+      />
+    </Stack>
+  );
+}
+
+export default function RootLayout() {
+  const [fontsLoaded, fontError] = useFonts({
+    Inter_400Regular,
+    Inter_500Medium,
+    Inter_600SemiBold,
+    Inter_700Bold,
+  });
+
+  useEffect(() => {
+    if (fontsLoaded || fontError) {
+      SplashScreen.hideAsync();
+    }
+  }, [fontsLoaded, fontError]);
+
+  if (!fontsLoaded && !fontError) return null;
+
+  return (
+    <SafeAreaProvider>
+      <ErrorBoundary>
+        <QueryClientProvider client={queryClient}>
+          <FoodLogProvider>
+            <GestureHandlerRootView>
+              <KeyboardProvider>
+                <RootLayoutNav />
+              </KeyboardProvider>
+            </GestureHandlerRootView>
+          </FoodLogProvider>
+        </QueryClientProvider>
+      </ErrorBoundary>
+    </SafeAreaProvider>
+  );
+}
