@@ -1,8 +1,12 @@
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
+import * as ImagePicker from "expo-image-picker";
 import { router, useLocalSearchParams } from "expo-router";
 import React, { useRef, useState } from "react";
 import {
+  ActivityIndicator,
+  Alert,
+  Animated,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -34,6 +38,8 @@ const MEAL_LABELS: Record<MealType, string> = {
   snack: "間食",
 };
 
+const API_BASE = `https://${process.env.EXPO_PUBLIC_DOMAIN}`;
+
 export default function AddFoodScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
@@ -51,6 +57,10 @@ export default function AddFoodScreen() {
   const [unit, setUnit] = useState("g");
   const [searchQuery, setSearchQuery] = useState("");
   const [showCommon, setShowCommon] = useState(true);
+  const [scanning, setScanning] = useState(false);
+  const [scanSuccess, setScanSuccess] = useState(false);
+
+  const pulseAnim = useRef(new Animated.Value(1)).current;
 
   const nameRef = useRef<TextInput>(null);
   const caloriesRef = useRef<TextInput>(null);
@@ -74,9 +84,106 @@ export default function AddFoodScreen() {
     setShowCommon(false);
   };
 
-  const isValid =
-    name.trim() &&
-    parseFloat(calories) > 0;
+  const startPulse = () => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, { toValue: 1.05, duration: 600, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1, duration: 600, useNativeDriver: true }),
+      ])
+    ).start();
+  };
+
+  const stopPulse = () => {
+    pulseAnim.stopAnimation();
+    pulseAnim.setValue(1);
+  };
+
+  const analyzeImage = async (base64: string) => {
+    setScanning(true);
+    setScanSuccess(false);
+    startPulse();
+    try {
+      const res = await fetch(`${API_BASE}/api/nutrition-scan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64: base64 }),
+      });
+      if (!res.ok) throw new Error("Scan failed");
+      const data = await res.json();
+
+      if (data.calories > 0) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        if (data.name && data.name !== "食品名") setName(data.name);
+        setCalories(data.calories.toString());
+        setProtein(data.protein?.toString() ?? "0");
+        setCarbs(data.carbs?.toString() ?? "0");
+        setFat(data.fat?.toString() ?? "0");
+        if (data.amount) setAmount(data.amount.toString());
+        if (data.unit) setUnit(data.unit);
+        setScanSuccess(true);
+        setShowCommon(false);
+      } else {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        Alert.alert("読み取りに失敗", "成分表を正面からはっきり撮影して再試行してください。");
+      }
+    } catch {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert("エラー", "画像の解析に失敗しました。もう一度お試しください。");
+    } finally {
+      setScanning(false);
+      stopPulse();
+    }
+  };
+
+  const handleScanCamera = async () => {
+    if (Platform.OS === "web") {
+      Alert.alert("非対応", "カメラ機能はスマートフォンのExpo Goでご利用ください。");
+      return;
+    }
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("カメラへのアクセスが必要です", "設定からカメラの使用を許可してください。");
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ["images"],
+      quality: 0.7,
+      base64: true,
+    });
+    if (!result.canceled && result.assets[0]?.base64) {
+      await analyzeImage(result.assets[0].base64);
+    }
+  };
+
+  const handleScanGallery = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("写真へのアクセスが必要です", "設定から写真ライブラリの使用を許可してください。");
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      quality: 0.7,
+      base64: true,
+    });
+    if (!result.canceled && result.assets[0]?.base64) {
+      await analyzeImage(result.assets[0].base64);
+    }
+  };
+
+  const showScanOptions = () => {
+    if (Platform.OS === "web") {
+      handleScanGallery();
+      return;
+    }
+    Alert.alert("成分表を読み取る", "撮影方法を選択してください", [
+      { text: "カメラで撮影", onPress: handleScanCamera },
+      { text: "アルバムから選ぶ", onPress: handleScanGallery },
+      { text: "キャンセル", style: "cancel" },
+    ]);
+  };
+
+  const isValid = name.trim() && parseFloat(calories) > 0;
 
   const handleSave = async () => {
     if (!isValid) return;
@@ -114,6 +221,61 @@ export default function AddFoodScreen() {
             {MEAL_LABELS[mealType]}に追加
           </Text>
         </View>
+
+        {/* Scan Button */}
+        <Animated.View style={{ transform: [{ scale: pulseAnim }], marginBottom: 16 }}>
+          <TouchableOpacity
+            onPress={showScanOptions}
+            disabled={scanning}
+            style={[
+              styles.scanCard,
+              {
+                backgroundColor: scanSuccess ? colors.secondary : colors.card,
+                borderColor: scanSuccess ? colors.primary : colors.border,
+                borderRadius: colors.radius,
+              },
+            ]}
+          >
+            {scanning ? (
+              <>
+                <ActivityIndicator color={colors.primary} size="small" />
+                <View style={styles.scanTextCol}>
+                  <Text style={[styles.scanTitle, { color: colors.foreground }]}>
+                    読み取り中...
+                  </Text>
+                  <Text style={[styles.scanSub, { color: colors.mutedForeground }]}>
+                    AIが成分表を解析しています
+                  </Text>
+                </View>
+              </>
+            ) : scanSuccess ? (
+              <>
+                <Feather name="check-circle" size={26} color={colors.primary} />
+                <View style={styles.scanTextCol}>
+                  <Text style={[styles.scanTitle, { color: colors.primary }]}>
+                    読み取り完了
+                  </Text>
+                  <Text style={[styles.scanSub, { color: colors.mutedForeground }]}>
+                    タップして再スキャン
+                  </Text>
+                </View>
+              </>
+            ) : (
+              <>
+                <Feather name="camera" size={26} color={colors.primary} />
+                <View style={styles.scanTextCol}>
+                  <Text style={[styles.scanTitle, { color: colors.foreground }]}>
+                    成分表を写真で読み取る
+                  </Text>
+                  <Text style={[styles.scanSub, { color: colors.mutedForeground }]}>
+                    パッケージの栄養成分表示を撮影
+                  </Text>
+                </View>
+                <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
+              </>
+            )}
+          </TouchableOpacity>
+        </Animated.View>
 
         {showCommon && (
           <View style={styles.section}>
@@ -153,17 +315,10 @@ export default function AddFoodScreen() {
                     },
                   ]}
                 >
-                  <Text
-                    style={[styles.commonName, { color: colors.foreground }]}
-                  >
+                  <Text style={[styles.commonName, { color: colors.foreground }]}>
                     {food.name}
                   </Text>
-                  <Text
-                    style={[
-                      styles.commonCals,
-                      { color: colors.mutedForeground },
-                    ]}
-                  >
+                  <Text style={[styles.commonCals, { color: colors.mutedForeground }]}>
                     {food.calories} kcal
                   </Text>
                 </TouchableOpacity>
@@ -361,12 +516,32 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   mealBadge: {
-    marginBottom: 16,
+    marginBottom: 12,
   },
   mealBadgeText: {
     fontSize: 13,
     fontWeight: "600",
     fontFamily: "Inter_600SemiBold",
+  },
+  scanCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 14,
+    borderWidth: 1.5,
+    gap: 12,
+  },
+  scanTextCol: {
+    flex: 1,
+  },
+  scanTitle: {
+    fontSize: 15,
+    fontWeight: "600",
+    fontFamily: "Inter_600SemiBold",
+  },
+  scanSub: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    marginTop: 2,
   },
   section: {
     marginBottom: 20,
