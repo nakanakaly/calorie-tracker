@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  Image,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -40,8 +41,6 @@ const MEAL_LABELS: Record<MealType, string> = {
 
 const API_BASE = `https://${process.env.EXPO_PUBLIC_DOMAIN}`;
 
-type ScanMode = "idle" | "scanning" | "scan_ok" | "estimating" | "estimate_ok";
-
 export default function AddFoodScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
@@ -59,19 +58,28 @@ export default function AddFoodScreen() {
   const [unit, setUnit] = useState("g");
   const [searchQuery, setSearchQuery] = useState("");
   const [showCommon, setShowCommon] = useState(true);
-  const [mode, setMode] = useState<ScanMode>("idle");
-  const [isEstimate, setIsEstimate] = useState(false);
 
-  const pulseAnim = useRef(new Animated.Value(1)).current;
+  // Label scan state
+  const [scanning, setScanning] = useState(false);
+  const [scanSuccess, setScanSuccess] = useState(false);
+  const scanPulse = useRef(new Animated.Value(1)).current;
+
+  // AI estimate state
+  const [estimateOpen, setEstimateOpen] = useState(false);
+  const [estimateImage, setEstimateImage] = useState<string | null>(null);
+  const [estimateImageUri, setEstimateImageUri] = useState<string | null>(null);
+  const [estimating, setEstimating] = useState(false);
+  const [estimateSuccess, setEstimateSuccess] = useState(false);
+  const [isEstimate, setIsEstimate] = useState(false);
+  const estimatePulse = useRef(new Animated.Value(1)).current;
+
   const nameRef = useRef<TextInput>(null);
   const caloriesRef = useRef<TextInput>(null);
   const proteinRef = useRef<TextInput>(null);
   const carbsRef = useRef<TextInput>(null);
   const fatRef = useRef<TextInput>(null);
 
-  const filteredFoods = COMMON_FOODS.filter((f) =>
-    f.name.includes(searchQuery)
-  );
+  const filteredFoods = COMMON_FOODS.filter((f) => f.name.includes(searchQuery));
 
   const fillCommonFood = (food: (typeof COMMON_FOODS)[0]) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -86,37 +94,25 @@ export default function AddFoodScreen() {
     setShowCommon(false);
   };
 
-  const startPulse = () => {
+  const startPulse = (anim: Animated.Value) => {
     Animated.loop(
       Animated.sequence([
-        Animated.timing(pulseAnim, { toValue: 1.04, duration: 600, useNativeDriver: true }),
-        Animated.timing(pulseAnim, { toValue: 1, duration: 600, useNativeDriver: true }),
+        Animated.timing(anim, { toValue: 1.04, duration: 600, useNativeDriver: true }),
+        Animated.timing(anim, { toValue: 1, duration: 600, useNativeDriver: true }),
       ])
     ).start();
   };
 
-  const stopPulse = () => {
-    pulseAnim.stopAnimation();
-    pulseAnim.setValue(1);
-  };
-
-  const applyResult = (data: Record<string, unknown>, estimate: boolean) => {
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    if (data.name && data.name !== "食品名") setName(data.name as string);
-    setCalories((data.calories as number).toString());
-    setProtein(((data.protein as number) ?? 0).toString());
-    setCarbs(((data.carbs as number) ?? 0).toString());
-    setFat(((data.fat as number) ?? 0).toString());
-    if (data.amount) setAmount((data.amount as number).toString());
-    if (data.unit) setUnit(data.unit as string);
-    setIsEstimate(estimate);
-    setShowCommon(false);
+  const stopPulse = (anim: Animated.Value) => {
+    anim.stopAnimation();
+    anim.setValue(1);
   };
 
   // ---- Label scan ----
   const analyzeLabel = async (base64: string) => {
-    setMode("scanning");
-    startPulse();
+    setScanning(true);
+    setScanSuccess(false);
+    startPulse(scanPulse);
     try {
       const res = await fetch(`${API_BASE}/api/nutrition-scan`, {
         method: "POST",
@@ -126,19 +122,27 @@ export default function AddFoodScreen() {
       if (!res.ok) throw new Error("Scan failed");
       const data = await res.json();
       if (data.calories > 0) {
-        applyResult(data, false);
-        setMode("scan_ok");
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        if (data.name && data.name !== "食品名") setName(data.name);
+        setCalories(data.calories.toString());
+        setProtein((data.protein ?? 0).toString());
+        setCarbs((data.carbs ?? 0).toString());
+        setFat((data.fat ?? 0).toString());
+        if (data.amount) setAmount(data.amount.toString());
+        if (data.unit) setUnit(data.unit);
+        setIsEstimate(false);
+        setScanSuccess(true);
+        setShowCommon(false);
       } else {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         Alert.alert("読み取りに失敗", "成分表を正面からはっきり撮影して再試行してください。");
-        setMode("idle");
       }
     } catch {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert("エラー", "画像の解析に失敗しました。もう一度お試しください。");
-      setMode("idle");
     } finally {
-      stopPulse();
+      setScanning(false);
+      stopPulse(scanPulse);
     }
   };
 
@@ -179,106 +183,80 @@ export default function AddFoodScreen() {
     ]);
   };
 
-  // ---- AI Food Estimate ----
-  const estimateFood = async (imageBase64?: string) => {
-    setMode("estimating");
-    startPulse();
+  // ---- AI Estimate ----
+  const pickEstimateCamera = async () => {
+    if (Platform.OS === "web") return;
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("カメラへのアクセスが必要です", "設定からカメラの使用を許可してください。");
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({ mediaTypes: ["images"], quality: 0.6, base64: true });
+    if (!result.canceled && result.assets[0]) {
+      setEstimateImage(result.assets[0].base64 ?? null);
+      setEstimateImageUri(result.assets[0].uri);
+    }
+  };
+
+  const pickEstimateGallery = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("写真へのアクセスが必要です", "設定から写真ライブラリの使用を許可してください。");
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], quality: 0.6, base64: true });
+    if (!result.canceled && result.assets[0]) {
+      setEstimateImage(result.assets[0].base64 ?? null);
+      setEstimateImageUri(result.assets[0].uri);
+    }
+  };
+
+  const runEstimate = async () => {
+    if (!name.trim() && !estimateImage) {
+      Alert.alert("料理名または写真が必要です", "料理名を入力するか、写真を選択してください。");
+      return;
+    }
+    setEstimating(true);
+    setEstimateSuccess(false);
+    startPulse(estimatePulse);
     try {
       const res = await fetch(`${API_BASE}/api/food-estimate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim() || undefined, imageBase64 }),
+        body: JSON.stringify({
+          name: name.trim() || undefined,
+          imageBase64: estimateImage || undefined,
+        }),
       });
       if (!res.ok) throw new Error("Estimate failed");
       const data = await res.json();
       if (data.calories > 0) {
-        applyResult(data, true);
-        setMode("estimate_ok");
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        if (data.name && data.name !== "食品名") setName(data.name);
+        setCalories(data.calories.toString());
+        setProtein((data.protein ?? 0).toString());
+        setCarbs((data.carbs ?? 0).toString());
+        setFat((data.fat ?? 0).toString());
+        if (data.amount) setAmount(data.amount.toString());
+        if (data.unit) setUnit(data.unit);
+        setIsEstimate(true);
+        setEstimateSuccess(true);
+        setShowCommon(false);
       } else {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        Alert.alert("推定に失敗", "料理名を具体的に入力するか、写真を添えて再試行してください。");
-        setMode("idle");
+        Alert.alert("推定に失敗", "料理名を具体的に入力するか、写真を選択して再試行してください。");
       }
     } catch {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert("エラー", "栄養素の推定に失敗しました。もう一度お試しください。");
-      setMode("idle");
     } finally {
-      stopPulse();
+      setEstimating(false);
+      stopPulse(estimatePulse);
     }
-  };
-
-  const pickImageForEstimate = async (useCamera: boolean): Promise<string | null> => {
-    if (useCamera) {
-      if (Platform.OS === "web") return null;
-      const { status } = await ImagePicker.requestCameraPermissionsAsync();
-      if (status !== "granted") {
-        Alert.alert("カメラへのアクセスが必要です", "設定からカメラの使用を許可してください。");
-        return null;
-      }
-      const result = await ImagePicker.launchCameraAsync({ mediaTypes: ["images"], quality: 0.6, base64: true });
-      return (!result.canceled && result.assets[0]?.base64) ? result.assets[0].base64 : null;
-    } else {
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== "granted") {
-        Alert.alert("写真へのアクセスが必要です", "設定から写真ライブラリの使用を許可してください。");
-        return null;
-      }
-      const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], quality: 0.6, base64: true });
-      return (!result.canceled && result.assets[0]?.base64) ? result.assets[0].base64 : null;
-    }
-  };
-
-  const showEstimateOptions = () => {
-    if (!name.trim()) {
-      Alert.alert(
-        "料理名を入力してください",
-        "「食品名」欄に料理名を入力してからAI推定を使用してください。\n写真だけでも推定できます。",
-        [
-          {
-            text: "写真で推定する",
-            onPress: () => Platform.OS === "web"
-              ? pickImageForEstimate(false).then(b64 => b64 && estimateFood(b64))
-              : Alert.alert("写真を選択", "", [
-                  { text: "カメラで撮影", onPress: () => pickImageForEstimate(true).then(b64 => b64 && estimateFood(b64)) },
-                  { text: "アルバムから選ぶ", onPress: () => pickImageForEstimate(false).then(b64 => b64 && estimateFood(b64)) },
-                  { text: "キャンセル", style: "cancel" },
-                ]),
-          },
-          { text: "キャンセル", style: "cancel" },
-        ]
-      );
-      nameRef.current?.focus();
-      return;
-    }
-
-    if (Platform.OS === "web") {
-      Alert.alert(
-        `「${name}」を推定`,
-        "写真を追加すると精度が上がります",
-        [
-          { text: "アルバムから写真を追加", onPress: () => pickImageForEstimate(false).then(b64 => estimateFood(b64 ?? undefined)) },
-          { text: "料理名だけで推定", onPress: () => estimateFood() },
-          { text: "キャンセル", style: "cancel" },
-        ]
-      );
-      return;
-    }
-
-    Alert.alert(
-      `「${name}」を推定`,
-      "写真を追加すると精度が上がります",
-      [
-        { text: "📷 カメラで写真を撮る", onPress: () => pickImageForEstimate(true).then(b64 => estimateFood(b64 ?? undefined)) },
-        { text: "🖼️ アルバムから写真を選ぶ", onPress: () => pickImageForEstimate(false).then(b64 => estimateFood(b64 ?? undefined)) },
-        { text: "料理名だけで推定", onPress: () => estimateFood() },
-        { text: "キャンセル", style: "cancel" },
-      ]
-    );
   };
 
   const isValid = name.trim() && parseFloat(calories) > 0;
-  const isBusy = mode === "scanning" || mode === "estimating";
+  const isBusy = scanning || estimating;
 
   const handleSave = async () => {
     if (!isValid) return;
@@ -314,21 +292,21 @@ export default function AddFoodScreen() {
           </Text>
         </View>
 
-        {/* Label Scan Button */}
-        <Animated.View style={{ transform: [{ scale: mode === "scanning" ? pulseAnim : 1 }], marginBottom: 10 }}>
+        {/* ---- Label Scan Card ---- */}
+        <Animated.View style={{ transform: [{ scale: scanPulse }], marginBottom: 10 }}>
           <TouchableOpacity
             onPress={showScanOptions}
             disabled={isBusy}
             style={[
               styles.aiCard,
               {
-                backgroundColor: mode === "scan_ok" ? colors.secondary : colors.card,
-                borderColor: mode === "scan_ok" ? colors.primary : colors.border,
+                backgroundColor: scanSuccess ? colors.secondary : colors.card,
+                borderColor: scanSuccess ? colors.primary : colors.border,
                 borderRadius: colors.radius,
               },
             ]}
           >
-            {mode === "scanning" ? (
+            {scanning ? (
               <>
                 <ActivityIndicator color={colors.primary} size="small" />
                 <View style={styles.aiTextCol}>
@@ -336,7 +314,7 @@ export default function AddFoodScreen() {
                   <Text style={[styles.aiSub, { color: colors.mutedForeground }]}>AIが成分表を解析しています</Text>
                 </View>
               </>
-            ) : mode === "scan_ok" ? (
+            ) : scanSuccess ? (
               <>
                 <Feather name="check-circle" size={24} color={colors.primary} />
                 <View style={styles.aiTextCol}>
@@ -357,49 +335,110 @@ export default function AddFoodScreen() {
           </TouchableOpacity>
         </Animated.View>
 
-        {/* AI Estimate Button */}
-        <Animated.View style={{ transform: [{ scale: mode === "estimating" ? pulseAnim : 1 }], marginBottom: 16 }}>
+        {/* ---- AI Estimate Card ---- */}
+        <View
+          style={[
+            styles.estimateCard,
+            {
+              backgroundColor: colors.card,
+              borderColor: estimateSuccess ? "#7B1FA2" : colors.border,
+              borderRadius: colors.radius,
+            },
+          ]}
+        >
+          {/* Header row */}
           <TouchableOpacity
-            onPress={showEstimateOptions}
+            onPress={() => setEstimateOpen((v) => !v)}
             disabled={isBusy}
-            style={[
-              styles.aiCard,
-              {
-                backgroundColor: mode === "estimate_ok" ? "#EDE7F6" : colors.card,
-                borderColor: mode === "estimate_ok" ? "#7B1FA2" : colors.border,
-                borderRadius: colors.radius,
-              },
-            ]}
+            style={styles.estimateHeader}
           >
-            {mode === "estimating" ? (
-              <>
-                <ActivityIndicator color="#7B1FA2" size="small" />
-                <View style={styles.aiTextCol}>
-                  <Text style={[styles.aiTitle, { color: colors.foreground }]}>推定中...</Text>
-                  <Text style={[styles.aiSub, { color: colors.mutedForeground }]}>AIがカロリーを計算しています</Text>
-                </View>
-              </>
-            ) : mode === "estimate_ok" ? (
-              <>
-                <Feather name="check-circle" size={24} color="#7B1FA2" />
-                <View style={styles.aiTextCol}>
-                  <Text style={[styles.aiTitle, { color: "#7B1FA2" }]}>AI推定完了</Text>
-                  <Text style={[styles.aiSub, { color: colors.mutedForeground }]}>タップして再推定</Text>
-                </View>
-              </>
-            ) : (
-              <>
-                <Feather name="zap" size={24} color="#7B1FA2" />
-                <View style={styles.aiTextCol}>
-                  <Text style={[styles.aiTitle, { color: colors.foreground }]}>料理名/写真でAI推定</Text>
-                  <Text style={[styles.aiSub, { color: colors.mutedForeground }]}>手料理・外食のカロリーをAIが予測</Text>
-                </View>
-                <Feather name="chevron-right" size={16} color={colors.mutedForeground} />
-              </>
-            )}
+            <Feather name="zap" size={22} color="#7B1FA2" />
+            <View style={styles.aiTextCol}>
+              <Text style={[styles.aiTitle, { color: estimateSuccess ? "#7B1FA2" : colors.foreground }]}>
+                {estimateSuccess ? "AI推定完了（タップで再推定）" : "料理名・写真でAI推定"}
+              </Text>
+              <Text style={[styles.aiSub, { color: colors.mutedForeground }]}>
+                手料理・外食のカロリーをAIが予測
+              </Text>
+            </View>
+            <Feather
+              name={estimateOpen ? "chevron-up" : "chevron-down"}
+              size={18}
+              color={colors.mutedForeground}
+            />
           </TouchableOpacity>
-        </Animated.View>
 
+          {/* Expanded panel */}
+          {estimateOpen && (
+            <View style={[styles.estimatePanel, { borderTopColor: colors.border }]}>
+              {/* Photo area */}
+              <Text style={[styles.estimatePanelLabel, { color: colors.mutedForeground }]}>
+                料理の写真（任意・あると精度UP）
+              </Text>
+
+              {estimateImageUri ? (
+                <View style={styles.imagePreviewRow}>
+                  <Image source={{ uri: estimateImageUri }} style={[styles.imagePreview, { borderRadius: colors.radius / 2 }]} />
+                  <TouchableOpacity
+                    onPress={() => { setEstimateImage(null); setEstimateImageUri(null); }}
+                    style={[styles.imageClearBtn, { backgroundColor: colors.muted, borderRadius: 20 }]}
+                  >
+                    <Feather name="x" size={14} color={colors.mutedForeground} />
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <View style={styles.photoButtonRow}>
+                  {Platform.OS !== "web" && (
+                    <TouchableOpacity
+                      onPress={pickEstimateCamera}
+                      style={[styles.photoBtn, { backgroundColor: colors.background, borderColor: colors.border, borderRadius: colors.radius / 2 }]}
+                    >
+                      <Feather name="camera" size={20} color="#7B1FA2" />
+                      <Text style={[styles.photoBtnText, { color: colors.foreground }]}>カメラで撮影</Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity
+                    onPress={pickEstimateGallery}
+                    style={[styles.photoBtn, { backgroundColor: colors.background, borderColor: colors.border, borderRadius: colors.radius / 2 }]}
+                  >
+                    <Feather name="image" size={20} color="#7B1FA2" />
+                    <Text style={[styles.photoBtnText, { color: colors.foreground }]}>アルバムから選ぶ</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {/* Hint */}
+              <Text style={[styles.estimateHint, { color: colors.mutedForeground }]}>
+                下の「食品名」欄に料理名も入力すると精度が上がります
+              </Text>
+
+              {/* Run button */}
+              <Animated.View style={{ transform: [{ scale: estimatePulse }] }}>
+                <TouchableOpacity
+                  onPress={runEstimate}
+                  disabled={estimating || isBusy}
+                  style={[
+                    styles.estimateRunBtn,
+                    { backgroundColor: estimating ? colors.muted : "#7B1FA2", borderRadius: colors.radius / 2 },
+                  ]}
+                >
+                  {estimating ? (
+                    <ActivityIndicator color="#fff" size="small" />
+                  ) : (
+                    <Feather name="zap" size={16} color="#fff" />
+                  )}
+                  <Text style={styles.estimateRunBtnText}>
+                    {estimating ? "推定中..." : "AIでカロリーを推定する"}
+                  </Text>
+                </TouchableOpacity>
+              </Animated.View>
+            </View>
+          )}
+        </View>
+
+        <View style={{ height: 16 }} />
+
+        {/* ---- Common Foods ---- */}
         {showCommon && (
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: colors.foreground }]}>よく食べるもの</Text>
@@ -428,6 +467,7 @@ export default function AddFoodScreen() {
           </View>
         )}
 
+        {/* ---- Manual Input ---- */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={[styles.sectionTitle, { color: colors.foreground }]}>手入力</Text>
@@ -588,6 +628,7 @@ const styles = StyleSheet.create({
   scroll: { padding: 16 },
   mealBadge: { marginBottom: 12 },
   mealBadgeText: { fontSize: 13, fontWeight: "600", fontFamily: "Inter_600SemiBold" },
+
   aiCard: {
     flexDirection: "row",
     alignItems: "center",
@@ -598,16 +639,80 @@ const styles = StyleSheet.create({
   aiTextCol: { flex: 1 },
   aiTitle: { fontSize: 14, fontWeight: "600", fontFamily: "Inter_600SemiBold" },
   aiSub: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
-  section: { marginBottom: 20 },
-  sectionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
-  sectionTitle: { fontSize: 16, fontWeight: "700", fontFamily: "Inter_700Bold", marginBottom: 10 },
-  searchBar: { flexDirection: "row", alignItems: "center", paddingHorizontal: 10, paddingVertical: 8, borderWidth: 1, gap: 8, marginBottom: 8 },
-  searchInput: { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular" },
-  commonList: { gap: 6 },
-  commonItem: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 10, borderWidth: 1 },
-  commonName: { fontSize: 14, fontFamily: "Inter_500Medium" },
-  commonCals: { fontSize: 12, fontFamily: "Inter_400Regular" },
-  toggleLink: { fontSize: 13, fontFamily: "Inter_500Medium" },
+
+  estimateCard: {
+    borderWidth: 1.5,
+    overflow: "hidden",
+  },
+  estimateHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 14,
+    gap: 12,
+  },
+  estimatePanel: {
+    borderTopWidth: 1,
+    padding: 14,
+    gap: 10,
+  },
+  estimatePanelLabel: {
+    fontSize: 12,
+    fontFamily: "Inter_500Medium",
+    marginBottom: 2,
+  },
+  photoButtonRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  photoBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 14,
+    borderWidth: 1,
+  },
+  photoBtnText: {
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+  },
+  imagePreviewRow: {
+    position: "relative",
+    alignSelf: "flex-start",
+  },
+  imagePreview: {
+    width: 120,
+    height: 90,
+  },
+  imageClearBtn: {
+    position: "absolute",
+    top: -8,
+    right: -8,
+    width: 24,
+    height: 24,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  estimateHint: {
+    fontSize: 11,
+    fontFamily: "Inter_400Regular",
+    lineHeight: 16,
+  },
+  estimateRunBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 13,
+    marginTop: 2,
+  },
+  estimateRunBtnText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "700",
+    fontFamily: "Inter_700Bold",
+  },
   estimateBadge: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -618,12 +723,25 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   estimateBadgeText: { fontSize: 12, fontFamily: "Inter_400Regular", flex: 1, lineHeight: 18 },
+
+  section: { marginBottom: 20 },
+  sectionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
+  sectionTitle: { fontSize: 16, fontWeight: "700", fontFamily: "Inter_700Bold", marginBottom: 10 },
+  searchBar: { flexDirection: "row", alignItems: "center", paddingHorizontal: 10, paddingVertical: 8, borderWidth: 1, gap: 8, marginBottom: 8 },
+  searchInput: { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular" },
+  commonList: { gap: 6 },
+  commonItem: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 10, borderWidth: 1 },
+  commonName: { fontSize: 14, fontFamily: "Inter_500Medium" },
+  commonCals: { fontSize: 12, fontFamily: "Inter_400Regular" },
+  toggleLink: { fontSize: 13, fontFamily: "Inter_500Medium" },
+
   row: { flexDirection: "row" },
   macroRow: { flexDirection: "row" },
   field: { marginBottom: 12 },
   fieldLabel: { fontSize: 12, fontFamily: "Inter_500Medium", marginBottom: 4 },
   fieldInput: { borderWidth: 1, paddingHorizontal: 12, paddingVertical: 10 },
   input: { fontSize: 15, fontFamily: "Inter_400Regular" },
+
   footer: { position: "absolute", bottom: 0, left: 0, right: 0, paddingHorizontal: 16, paddingTop: 12, borderTopWidth: 1 },
   saveBtn: { alignItems: "center", paddingVertical: 14 },
   saveBtnText: { fontSize: 16, fontWeight: "700", fontFamily: "Inter_700Bold" },
