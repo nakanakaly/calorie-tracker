@@ -1,9 +1,10 @@
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import React, { useRef } from "react";
+import React from "react";
 import {
   Alert,
-  Animated,
+  Platform,
+  Pressable,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -20,85 +21,78 @@ interface FoodEntryCardProps {
 
 export function FoodEntryCard({ entry, onDelete, onEdit }: FoodEntryCardProps) {
   const colors = useColors();
-  const scaleAnim = useRef(new Animated.Value(1)).current;
-
-  const handlePressIn = () => {
-    Animated.spring(scaleAnim, {
-      toValue: 0.97,
-      useNativeDriver: true,
-    }).start();
-  };
-
-  const handlePressOut = () => {
-    Animated.spring(scaleAnim, {
-      toValue: 1,
-      useNativeDriver: true,
-    }).start();
-  };
 
   const handleDelete = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    Alert.alert("削除", `「${entry.name}」を削除しますか？`, [
-      { text: "キャンセル", style: "cancel" },
-      {
-        text: "削除",
-        style: "destructive",
-        onPress: () => onDelete(entry.id),
-      },
-    ]);
+    if (Platform.OS === "web") {
+      if (window.confirm(`「${entry.name}」を削除しますか？`)) {
+        onDelete(entry.id);
+      }
+    } else {
+      Alert.alert("削除", `「${entry.name}」を削除しますか？`, [
+        { text: "キャンセル", style: "cancel" },
+        {
+          text: "削除",
+          style: "destructive",
+          onPress: () => onDelete(entry.id),
+        },
+      ]);
+    }
   };
 
   return (
-    <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
-      <TouchableOpacity
-        activeOpacity={1}
-        onPressIn={handlePressIn}
-        onPressOut={handlePressOut}
-        onPress={() => onEdit(entry)}
-        style={[
-          styles.card,
-          {
-            backgroundColor: colors.card,
-            borderRadius: colors.radius,
-            borderColor: colors.border,
-          },
-        ]}
-      >
-        <View style={styles.main}>
-          <View style={styles.info}>
-            <Text
-              style={[styles.name, { color: colors.foreground }]}
-              numberOfLines={1}
-            >
-              {entry.name}
-            </Text>
-            <Text style={[styles.amount, { color: colors.mutedForeground }]}>
-              {entry.amount}{entry.unit}
-            </Text>
-          </View>
-          <View style={styles.right}>
-            <Text style={[styles.calories, { color: colors.primary }]}>
-              {entry.calories.toFixed(0)}
-            </Text>
-            <Text style={[styles.kcal, { color: colors.mutedForeground }]}>
-              kcal
-            </Text>
-          </View>
-          <TouchableOpacity
-            onPress={handleDelete}
-            style={styles.deleteBtn}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+    <View
+      style={[
+        styles.card,
+        {
+          backgroundColor: colors.card,
+          borderRadius: colors.radius,
+          borderColor: colors.border,
+        },
+      ]}
+    >
+      <View style={styles.main}>
+        <Pressable
+          style={styles.info}
+          onPress={() => onEdit(entry)}
+          android_ripple={{ color: colors.muted }}
+        >
+          <Text
+            style={[styles.name, { color: colors.foreground }]}
+            numberOfLines={1}
           >
-            <Feather name="trash-2" size={16} color={colors.mutedForeground} />
-          </TouchableOpacity>
+            {entry.name}
+          </Text>
+          <Text style={[styles.amount, { color: colors.mutedForeground }]}>
+            {entry.amount}{entry.unit}
+          </Text>
+        </Pressable>
+
+        <View style={styles.right}>
+          <Text style={[styles.calories, { color: colors.primary }]}>
+            {entry.calories.toFixed(0)}
+          </Text>
+          <Text style={[styles.kcal, { color: colors.mutedForeground }]}>
+            kcal
+          </Text>
         </View>
-        <View style={[styles.macros, { borderTopColor: colors.border }]}>
-          <MacroChip label="P" value={entry.protein} color={colors.protein} />
-          <MacroChip label="C" value={entry.carbs} color={colors.carbs} />
-          <MacroChip label="F" value={entry.fat} color={colors.fat} />
-        </View>
-      </TouchableOpacity>
-    </Animated.View>
+
+        <TouchableOpacity
+          onPress={handleDelete}
+          style={styles.deleteBtn}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          activeOpacity={0.5}
+        >
+          <Feather name="trash-2" size={18} color={colors.destructive} />
+        </TouchableOpacity>
+      </View>
+
+      <View style={[styles.macros, { borderTopColor: colors.border }]}>
+        <MacroChip label="P" value={entry.protein} color={colors.protein} />
+        <MacroChip label="C" value={entry.carbs} color={colors.carbs} />
+        <MacroChip label="F" value={entry.fat} color={colors.fat} />
+      </View>
+    </View>
   );
 }
 
@@ -115,7 +109,7 @@ function MacroChip({
     <View style={styles.chip}>
       <View style={[styles.chipDot, { backgroundColor: color }]} />
       <Text style={[styles.chipLabel, { color }]}>{label}</Text>
-      <Text style={[styles.chipValue]}>{value.toFixed(1)}g</Text>
+      <Text style={styles.chipValue}>{value.toFixed(1)}g</Text>
     </View>
   );
 }
@@ -129,7 +123,9 @@ const styles = StyleSheet.create({
   main: {
     flexDirection: "row",
     alignItems: "center",
-    padding: 12,
+    paddingVertical: 10,
+    paddingLeft: 12,
+    paddingRight: 8,
     gap: 8,
   },
   info: {
@@ -160,7 +156,8 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_400Regular",
   },
   deleteBtn: {
-    padding: 4,
+    padding: 6,
+    borderRadius: 8,
   },
   macros: {
     flexDirection: "row",
