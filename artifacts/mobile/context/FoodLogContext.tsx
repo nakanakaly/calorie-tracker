@@ -65,9 +65,13 @@ const FoodLogContext = createContext<FoodLogContextType | null>(null);
 export function FoodLogProvider({ children }: { children: React.ReactNode }) {
   const [entries, setEntries] = useState<FoodEntry[]>([]);
   const [dailyGoal, setDailyGoal] = useState<DailyGoal>(DEFAULT_GOAL);
-  const [selectedDate, setSelectedDate] = useState<string>(
-    new Date().toISOString().split("T")[0]
-  );
+  const [selectedDate, setSelectedDate] = useState<string>(() => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, "0");
+    const d = String(now.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  });
 
   useEffect(() => {
     loadData();
