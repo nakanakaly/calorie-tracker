@@ -15,10 +15,7 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.nakalily.calorietracker",
-      "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
-      }
+      "bundleIdentifier": "com.nakalily.calorietracker"
     },
     "android": {
       "package": "com.nakalily.calorietracker"
@@ -34,12 +31,6 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    },
-    "extra": {
-      "eas": {
-        "projectId": "729410a5-aa87-4732-8de1-ed61b7cbcee6"
-      }
-    },
-    "owner": "nakalily"
+    }
   }
 }
